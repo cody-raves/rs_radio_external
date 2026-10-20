@@ -29,14 +29,6 @@ function RSRadioExternalResolvePlayable(rawUrl, callback, options)
         return
     end
 
-    -- Player-submitted links (the base tags them) must clear the owner's
-    -- allowlist when one is configured. Decks and station media carry no tag.
-    if type(options) == "table" and options.context == "listener_custom"
-        and not RSRadioExternalIsListenerAllowlistedUrl(sourceUrl) then
-        callback(nil, "source_not_allowlisted")
-        return
-    end
-
     if RSRadioExternalIsSoundCloudUrl(sourceUrl) then
         RSRadioExternalResolveSoundCloud(sourceUrl, callback)
         return
@@ -72,27 +64,6 @@ local cache = {}
 local active = 0
 local seq = 0
 local pump
-local inflightCount, cacheCount = 0, 0
-local cacheSlots, cacheCursor = {}, 1
-local MAX_PENDING = 1024
-local MAX_WAITERS = 1024
-local MAX_CACHED = 1024
-
-local function cacheMetadata(key, info)
-    local old = cacheSlots[cacheCursor]
-    if old and cache[old.key] == old.entry then
-        cache[old.key] = nil
-        cacheCount = cacheCount - 1
-    end
-    local entry = {
-        meta = info,
-        expiresAt = os.time() + math.max(300, math.floor(tonumber(Config and Config.MetadataCacheTtlSec) or 21600))
-    }
-    if cache[key] == nil then cacheCount = cacheCount + 1 end
-    cache[key] = entry
-    cacheSlots[cacheCursor] = { key = key, entry = entry }
-    cacheCursor = (cacheCursor % MAX_CACHED) + 1
-end
 
 local function concurrency()
     return math.max(1, math.min(8, math.floor(tonumber(Config and Config.MetadataHydrateConcurrency) or 3)))
@@ -105,18 +76,14 @@ local function finishJob(key, token, meta, err)
     end
 
     inflight[key] = nil
-    inflightCount = inflightCount - 1
-    if entry.started then
-        active = math.max(0, active - 1)
-    else
-        for index = #queue, 1, -1 do
-            if queue[index].token == token then table.remove(queue, index); break end
-        end
-    end
+    active = math.max(0, active - 1)
 
     local info = type(meta) == "table" and meta or nil
     if info and ((tonumber(info.durationSec) or 0) > 0 or trim(info.title) ~= "") then
-        cacheMetadata(key, info)
+        cache[key] = {
+            meta = info,
+            expiresAt = os.time() + math.max(300, math.floor(tonumber(Config and Config.MetadataCacheTtlSec) or 21600))
+        }
     end
 
     for _, waiter in ipairs(type(entry.waiters) == "table" and entry.waiters or {}) do
@@ -146,7 +113,10 @@ pump = function()
 
         if key ~= "" and type(inflight[key]) == "table" and tonumber(inflight[key].token) == token then
             active = active + 1
-            inflight[key].started = true
+
+            SetTimeout(math.max(5000, math.floor(tonumber(Config and Config.MetadataHydrateTimeoutMs) or 20000)), function()
+                finishJob(key, token, nil, "metadata_timeout")
+            end)
 
             if RSRadioExternalIsSoundCloudUrl(sourceUrl) then
                 RSRadioExternalResolveSoundCloud(sourceUrl, function(_url, err, meta)
@@ -191,13 +161,12 @@ function RSRadioExternalResolveMetadata(rawUrl, callback, options)
         callback(type(cached.meta) == "table" and cached.meta or nil, nil)
         return
     end
-    if cache[key] ~= nil then cacheCount = cacheCount - 1; cache[key] = nil end
+    cache[key] = nil
 
     -- Already being fetched: join the existing job rather than starting a
     -- second identical request.
     local pending = inflight[key]
     if type(pending) == "table" then
-        if #pending.waiters >= MAX_WAITERS then callback(nil, "metadata_busy"); return end
         pending.waiters[#pending.waiters + 1] = callback
         if type(options) == "table" and options.priority == true then
             for index = #queue, 1, -1 do
@@ -213,7 +182,6 @@ function RSRadioExternalResolveMetadata(rawUrl, callback, options)
         return
     end
 
-    if inflightCount >= MAX_PENDING then callback(nil, "metadata_busy"); return end
     seq = seq + 1
     local token = seq
     inflight[key] = {
@@ -222,7 +190,6 @@ function RSRadioExternalResolveMetadata(rawUrl, callback, options)
         waiters = { callback },
         queuedAt = GetGameTimer()
     }
-    inflightCount = inflightCount + 1
 
     local job = { key = key, token = token, sourceUrl = sourceUrl }
     if type(options) == "table" and options.priority == true then
@@ -231,25 +198,20 @@ function RSRadioExternalResolveMetadata(rawUrl, callback, options)
         queue[#queue + 1] = job
     end
 
-    -- Include time waiting for a slot. Otherwise an unresponsive provider can
-    -- leave queued lookups running long after the base's caller timed out.
-    SetTimeout(math.max(5000, math.floor(tonumber(Config and Config.MetadataHydrateTimeoutMs) or 20000)), function()
-        finishJob(key, token, nil, "metadata_timeout")
-    end)
-
     trace(("queued metadata for %s (%s waiting)"):format(sourceUrl, tostring(#queue)))
     pump()
 end
 
 function RSRadioExternalGetResolveHealth()
+    local inflightCount, cacheCount = 0, 0
+    for _ in pairs(inflight) do inflightCount = inflightCount + 1 end
+    for _ in pairs(cache) do cacheCount = cacheCount + 1 end
+
     return {
         active = active,
         queued = #queue,
         inflight = inflightCount,
         cached = cacheCount,
-        concurrency = concurrency(),
-        pendingLimit = MAX_PENDING,
-        waiterLimit = MAX_WAITERS,
-        cacheLimit = MAX_CACHED
+        concurrency = concurrency()
     }
 end

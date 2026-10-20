@@ -79,27 +79,13 @@ local function parseIsoDuration(value)
     return total > 0 and total or nil
 end
 
--- Find literal anchors with Lua's fast plain search. Running a Lua pattern
--- over an entire multi-megabyte watch page once per field blocks the server
--- scheduler. Search the whole page, but match only a small field/tag window.
-local function findHtmlField(html, anchor, pattern)
-    local cursor = 1
-    while true do
-        local at = html:find(anchor, cursor, true)
-        if not at then return nil end
-        local value = html:sub(at, at + 8191):match("^" .. pattern)
-        if value ~= nil then return value end
-        cursor = at + #anchor
-    end
-end
-
 local function parseDurationFromHtml(body)
     local html = tostring(body or "")
     if html == "" then
         return nil
     end
 
-    local lengthSeconds = findHtmlField(html, '"lengthSeconds"', '"lengthSeconds"%s*:%s*"?(%d+)"?')
+    local lengthSeconds = html:match('"lengthSeconds"%s*:%s*"?(%d+)"?')
     if lengthSeconds then
         local duration = tonumber(lengthSeconds)
         if duration and duration > 0 then
@@ -107,7 +93,7 @@ local function parseDurationFromHtml(body)
         end
     end
 
-    local durationMs = findHtmlField(html, '"approxDurationMs"', '"approxDurationMs"%s*:%s*"?(%d+)"?')
+    local durationMs = html:match('"approxDurationMs"%s*:%s*"?(%d+)"?')
     if durationMs then
         local duration = (tonumber(durationMs) or 0) / 1000.0
         if duration > 0 then
@@ -116,8 +102,8 @@ local function parseDurationFromHtml(body)
     end
 
     return parseIsoDuration(
-        findHtmlField(html, 'itemprop=', 'itemprop=["\']duration["\'][^>]-content=["\']([^"\']+)["\']')
-        or findHtmlField(html, 'content=', 'content=["\']([^"\']+)["\'][^>]-itemprop=["\']duration["\']')
+        html:match('itemprop=["\']duration["\'][^>]-content=["\']([^"\']+)["\']')
+        or html:match('content=["\']([^"\']+)["\'][^>]-itemprop=["\']duration["\']')
     )
 end
 
@@ -127,10 +113,12 @@ local function parseTitleFromHtml(body)
         return nil
     end
 
-    local title = findHtmlField(html, '<meta', '<meta%s+property=["\']og:title["\']%s+content=["\']([^"\']+)["\']')
-        or findHtmlField(html, '<meta', '<meta%s+content=["\']([^"\']+)["\']%s+property=["\']og:title["\']')
-        or findHtmlField(html, '<title>', '<title>(.-)</title>')
-    title = htmlDecode(trim(title)):gsub("%s+%- YouTube%s*$", "")
+    local title = firstNonEmpty(
+        html:match('<meta%s+property=["\']og:title["\']%s+content=["\']([^"\']+)["\']'),
+        html:match('<meta%s+content=["\']([^"\']+)["\']%s+property=["\']og:title["\']'),
+        html:match('<title>(.-)</title>')
+    )
+    title = htmlDecode(title):gsub("%s+%- YouTube%s*$", "")
     return title ~= "" and title or nil
 end
 
@@ -146,12 +134,21 @@ local function fetchOEmbedTitle(watchUrl, callback)
         ("https://noembed.com/embed?url=%s"):format(urlEncode(raw))
     }
 
+    local function fetchHtmlFallback()
+        PerformHttpRequest(raw, function(statusCode, body)
+            if tonumber(statusCode) ~= 200 or type(body) ~= "string" or body == "" then
+                trace(("title lookup failed url=%s status=%s"):format(raw, tostring(statusCode)))
+                callback(nil)
+                return
+            end
+            callback(parseTitleFromHtml(body))
+        end, "GET", "", PAGE_HEADERS)
+    end
+
     local function tryEndpoint(index)
         local endpoint = endpoints[index]
         if not endpoint then
-            -- The caller fetches the canonical watch page once, extracting
-            -- title and duration together even when both oEmbed hosts fail.
-            callback(nil)
+            fetchHtmlFallback()
             return
         end
 

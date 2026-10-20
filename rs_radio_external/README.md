@@ -40,32 +40,10 @@ Everything lives in `config.lua`:
   — per-provider switches.
 - `Config.ListenerCustom*` — what ordinary players may play through radios they
   control.
-- `Config.ListenerCustomAllowlist` — optional list of links players are limited
-  to (YouTube ids/URLs, playlists, SoundCloud tracks, direct URLs or folder
-  prefixes). Empty means any supported link; DJ decks and station playlists are
-  never filtered.
 - `Config.StationPackageEnabled` — auto-install of the supplied stations
   (idempotent, ownership-scoped, never overwrites admin-edited rows).
 - `Config.Migration*` — legacy data import (see below).
 - `Config.StationControlAcePermission` — ACE permission for the admin command.
-
-## Resolver load handling
-
-Metadata lookups share in-flight work for the same URL. The
-`Config.MetadataHydrateTimeoutMs` deadline includes time waiting in the queue
-(20 seconds by default). Expired queued work is removed; late provider replies
-cannot complete it twice.
-
-The adapter admits up to 1,024 waiting dispatches and processes at most 32 per
-worker tick, yielding earlier when a batch has used 2 ms. Metadata has separate
-limits of 1,024 pending URLs, 1,024 waiters per URL, and 1,024 cached results.
-Excess work receives a busy response instead of growing the queue indefinitely.
-Use the matching updated base resource so it handles rejected dispatches
-immediately.
-
-YouTube metadata uses oEmbed first, then a single canonical watch-page request.
-The parser searches the complete page using literal anchors and limits pattern
-matching to 8 KiB field windows, avoiding repeated whole-page pattern scans.
 
 ## Supplied stations
 
