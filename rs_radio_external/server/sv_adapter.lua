@@ -42,6 +42,19 @@ local function neutralizeMeta(meta)
     return meta
 end
 
+local function approvedPhoneTracks()
+    local out = {}
+    for _, value in ipairs(Config.ListenerCustomAllowlist or {}) do
+        local url = tostring(value or "")
+        -- Prefix rules permit folders but are not playable tracks.
+        if url ~= "" and url:sub(-1) ~= "/" then
+            out[#out + 1] = {url=url, title=(Config.ListenerCustomTrackLabels or {})[url] or url}
+        end
+        if #out >= 200 then break end
+    end
+    return out
+end
+
 local function capabilities()
     return {
         embedSources = Config.YoutubeEnabled == true,
@@ -57,7 +70,9 @@ local function capabilities()
         listenerEmbedLive = Config.ListenerCustomYoutubeLiveEnabled == true,
         listenerStreamLinks = Config.ListenerCustomSoundCloudEnabled == true,
         listenerControllerOnly = Config.ListenerCustomSourceControllerOnly ~= false,
-        listenerPlaylistMaxItems = tonumber(Config.ListenerCustomPlaylistMaxItems) or 25
+        listenerPlaylistMaxItems = tonumber(Config.ListenerCustomPlaylistMaxItems) or 25,
+        listenerAllowlistActive = RSRadioExternalListenerAllowlistActive(),
+        listenerApprovedTracks = approvedPhoneTracks()
     }
 end
 
@@ -134,6 +149,10 @@ local adapter = {
 
     extractMediaId = function(url)
         return RSRadioExternalExtractYoutubeVideoId(url)
+    end,
+
+    listenerAllowsUrl = function(url)
+        return RSRadioExternalIsListenerAllowlistedUrl(url)
     end,
 
     resolve = function(url, cb, options)
@@ -248,12 +267,20 @@ end)
 -- server event: replies produced inside an export invocation's context (or
 -- through argument function references) do not reliably arrive.
 local resolveQueue = {}
+local resolveHead, resolveTail = 1, 0
+local RESOLVE_QUEUE_LIMIT = 1024
+local RESOLVE_BATCH_SIZE = 32
 
 CreateThread(function()
     while true do
         Wait(25)
-        while #resolveQueue > 0 do
-            local job = table.remove(resolveQueue, 1)
+        local processed = 0
+        local sliceStarted = os.clock()
+        while resolveHead <= resolveTail and processed < RESOLVE_BATCH_SIZE do
+            local job = resolveQueue[resolveHead]
+            resolveQueue[resolveHead] = nil
+            resolveHead = resolveHead + 1
+            processed = processed + 1
             local fn = adapter[tostring(job.method or "")]
             if type(fn) ~= "function" then
                 TriggerEvent("rs-radio:adapterResolveResult", job.replyId, nil, "unsupported_source", nil, nil)
@@ -265,12 +292,19 @@ CreateThread(function()
                     TriggerEvent("rs-radio:adapterResolveResult", job.replyId, nil, tostring(err or "adapter_error"), nil, nil)
                 end
             end
+            if (os.clock() - sliceStarted) >= 0.002 then break end
+        end
+        if resolveHead > resolveTail then
+            resolveQueue = {}
+            resolveHead, resolveTail = 1, 0
         end
     end
 end)
 
 exports("adapterResolve", function(method, url, options, replyId)
-    resolveQueue[#resolveQueue + 1] = {
+    if resolveTail - resolveHead + 1 >= RESOLVE_QUEUE_LIMIT then return false end
+    resolveTail = resolveTail + 1
+    resolveQueue[resolveTail] = {
         method = method,
         url = url,
         options = options,
@@ -299,6 +333,8 @@ RegisterCommand("radioexternaldiag", function(src, args)
 
     say(("attached=%s"):format(tostring(RSRadioExternalIsAttached())))
     say(("provider classify=%s"):format(tostring(RSRadioExternalClassifyUrl(url))))
+    say(("listener allowlist active=%s allowed=%s"):format(
+        tostring(RSRadioExternalListenerAllowlistActive()), tostring(RSRadioExternalIsListenerAllowlistedUrl(url))))
     say(("adapter classify=%s"):format(tostring(adapter.classify(url))))
 
     local ok, baseKind = pcall(function()

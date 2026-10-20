@@ -42,6 +42,21 @@ Config.ListenerCustomSoundCloudEnabled = true
 Config.ListenerCustomSourceControllerOnly = true
 Config.ListenerCustomPlaylistMaxItems = 25
 
+-- Optional allowlist for links players submit themselves. Empty (default):
+-- any supported link plays. With entries, a player's link plays only if it
+-- matches one of them; anything else is refused with "not on the server's
+-- approved list". DJ decks and station playlists are never filtered by this.
+--   YouTube video    - any URL form or the bare 11-character id
+--   YouTube playlist - a URL containing list=<id>
+--   SoundCloud       - the full track URL (https://soundcloud.com/<artist>/<track>)
+--   Direct audio     - the exact URL, or a prefix ending in "/" to allow a folder
+Config.ListenerCustomAllowlist = {
+    -- "https://youtu.be/dQw4w9WgXcQ",
+    -- "https://www.youtube.com/playlist?list=PLxxxxxxxx",
+    -- "https://soundcloud.com/artist/track-name",
+    -- "https://cdn.example.com/radio/",
+}
+
 Config.SavedLibraryMaxRowsPerPlayer = 200
 Config.SavedLibraryRateLimitMs = 1500
 

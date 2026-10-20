@@ -186,26 +186,31 @@ local function discoverClientIdFromPage(sourceUrl, callback)
     })
 end
 
--- Prefer a progressive MP3 stream; HLS variants work but need more client-side
--- handling, so they are only used when nothing else is offered.
+-- Prefer a progressive MP3 stream. SoundCloud now serves most tracks as HLS
+-- only; the base NUI stitches HLS with fragmented-MP4 audio (audio/mp4) into
+-- one playable file, so that variant comes next. MPEG-TS style variants
+-- ("audio/mpegurl") cannot be played by FiveM's browser and are a last resort.
 local function chooseTranscoding(track)
     local media = type(track) == "table" and type(track.media) == "table" and track.media or {}
     local transcodings = type(media.transcodings) == "table" and media.transcodings or {}
 
-    local fallback = nil
+    local hlsMp4, fallback = nil, nil
     for index = 1, #transcodings do
         local item = transcodings[index]
-        if type(item) == "table" and trim(item.url) ~= "" then
+        if type(item) == "table" and trim(item.url) ~= "" and item.snipped ~= true then
             local format = type(item.format) == "table" and item.format or {}
             local protocol = tostring(format.protocol or "")
             local mimeType = tostring(format.mime_type or ""):lower()
             if protocol == "progressive" and mimeType:match("audio/mpeg") then
                 return item
             end
+            if protocol == "hls" and mimeType:match("^audio/mp4") then
+                hlsMp4 = hlsMp4 or item
+            end
             fallback = fallback or item
         end
     end
-    return fallback
+    return hlsMp4 or fallback
 end
 
 local resolveFailureLogs = 0

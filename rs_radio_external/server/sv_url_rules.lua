@@ -268,3 +268,118 @@ function RSRadioExternalExtractYoutubeVideoId(rawUrl)
     end
     return ""
 end
+
+-- ---------------------------------------------------------------------------
+-- Listener allowlist
+-- ---------------------------------------------------------------------------
+-- Owner-curated links players may submit (Config.ListenerCustomAllowlist).
+-- Matching is by identity, not by string: every YouTube URL form collapses to
+-- the video id, playlists to the list id, SoundCloud to host + path, direct
+-- links to the exact URL or an allowed folder prefix.
+
+local allowlistIndex = nil
+
+local function allowlistSoundCloudKey(rawUrl)
+    local lower = trim(rawUrl):lower()
+    local host, path = lower:match("^https://([^/%?#]+)([^%?#]*)")
+    if not host then
+        return nil
+    end
+    host = normalizeHost(host):gsub("^www%.", ""):gsub("^m%.", "")
+    path = tostring(path or ""):gsub("/+$", "")
+    if path == "" then
+        return nil
+    end
+    return "sc:" .. host .. path
+end
+
+local function allowlistDirectKey(rawUrl)
+    local lower = trim(rawUrl):lower():gsub("#.*$", "")
+    return lower ~= "" and ("url:" .. lower) or nil
+end
+
+local function buildAllowlistIndex()
+    local index = { keys = {}, prefixes = {}, count = 0 }
+    local list = Config and Config.ListenerCustomAllowlist
+    if type(list) ~= "table" then
+        return index
+    end
+    for _, raw in pairs(list) do
+        local value = trim(raw)
+        if value ~= "" then
+            local matched = false
+            local videoId = RSRadioExternalExtractYoutubeVideoId(value)
+            if videoId ~= "" then
+                index.keys["yt:" .. videoId] = true
+                matched = true
+            end
+            local listId = value:match("[?&]list=([%w%-_]+)")
+            if listId then
+                index.keys["ytlist:" .. listId] = true
+                matched = true
+            end
+            local scKey = allowlistSoundCloudKey(value)
+            if scKey then
+                index.keys[scKey] = true
+                matched = true
+            end
+            if not matched then
+                local lower = value:lower():gsub("#.*$", "")
+                if lower:sub(-1) == "/" then
+                    index.prefixes[#index.prefixes + 1] = lower
+                else
+                    index.keys["url:" .. lower] = true
+                end
+            end
+            index.count = index.count + 1
+        end
+    end
+    return index
+end
+
+local function allowlist()
+    if allowlistIndex == nil then
+        allowlistIndex = buildAllowlistIndex()
+    end
+    return allowlistIndex
+end
+
+function RSRadioExternalListenerAllowlistActive()
+    return allowlist().count > 0
+end
+
+function RSRadioExternalIsListenerAllowlistedUrl(rawUrl)
+    local index = allowlist()
+    if index.count == 0 then
+        return true
+    end
+    local value = trim(rawUrl)
+    local kind = RSRadioExternalClassifyUrl(value)
+    if kind == "youtube_video" or kind == "youtube_live" then
+        local videoId = RSRadioExternalExtractYoutubeVideoId(value)
+        return videoId ~= "" and index.keys["yt:" .. videoId] == true
+    end
+    if kind == "youtube_playlist" then
+        local listId = value:match("[?&]list=([%w%-_]+)")
+        return listId ~= nil and index.keys["ytlist:" .. listId] == true
+    end
+    if kind == "soundcloud_track" then
+        local key = allowlistSoundCloudKey(value)
+        return key ~= nil and index.keys[key] == true
+    end
+    if kind == "direct_audio" then
+        local key = allowlistDirectKey(value)
+        if key and index.keys[key] == true then
+            return true
+        end
+        local lower = value:lower()
+        for i = 1, #index.prefixes do
+            local prefix = index.prefixes[i]
+            if lower:sub(1, #prefix) == prefix then
+                return true
+            end
+        end
+        return false
+    end
+    return false
+end
